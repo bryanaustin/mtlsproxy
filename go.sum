@@ -1,0 +1,4 @@
+github.com/BurntSushi/toml v1.2.1 h1:9F2/+DoOYIOksmaJFPw1tGFy1eDnIJXg+UHjuD8lTak=
+github.com/BurntSushi/toml v1.2.1/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
+github.com/bryanaustin/yaarp v0.0.0-20220314230500-978900d35ea8 h1:LpCqbgZ30THOXy3gBH+srG5uWT7Dp9ZQMlbId9WXBWw=
+github.com/bryanaustin/yaarp v0.0.0-20220314230500-978900d35ea8/go.mod h1:qq5aHiSrRzNhVetRk+MxwjLKuC9qIaRtg2OCecePlMo=
