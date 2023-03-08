@@ -16,9 +16,11 @@ type Instance struct {
 	p     *Profile
 	// l net.Listener // Interface
 	newCon  chan newConnection
-	newDest chan socketInfo
-	newList chan socketInfo
+	newDest chan *socketInfo
+	newList chan *socketInfo
+	fin     chan struct{}
 	change  sync.Mutex
+	closed  bool
 }
 
 type newConnection struct {
@@ -31,41 +33,36 @@ type socketInfo struct {
 	net, addr string
 }
 
+type conConculsion struct {
+	ident string
+	err   error
+	xfer  int64
+}
+
 func NewInstance(p *Profile) (inst *Instance, err error) {
 	inst = &Instance{
 		p:       p,
 		ident:   p.Name,
 		newCon:  make(chan newConnection),
-		newDest: make(chan socketInfo),
-		newList: make(chan socketInfo),
+		newDest: make(chan *socketInfo),
+		newList: make(chan *socketInfo),
+		fin:     make(chan struct{}),
 	}
 	go inst.run()
 	err = inst.changeEverything(p) // locking not needed
 	return
 }
 
-// Cases:
-// 1) New Profile
-//   - Destination info - Set
-//   - Connection handler - Created/Started
-//   - Listener - Created/Started
-//
-// 2) Change destination certs or address
-//   - Destination info - Swap with old profile, new connections get this
-//   - Connection handler - End all current connections immediately
-//   - Listener - Unchanged
-//     (Dest info is swapped before connections are altered)
-//
-// 3) Change listen certs or address
-//   - Destination info - No change
-//   - Connection handler - No change
-//   - Listener - Unchanged
-//     (Start new listener then gracefully close old listener with timeout)
 func (inst *Instance) AdaptTo(p *Profile) error {
 	inst.change.Lock()
 	defer inst.change.Unlock()
-	lc := p.ListenChanged(p)
-	dc := p.DestinationChanged(p)
+
+	if inst.closed {
+		return nil
+	}
+
+	lc := inst.p.ListenChanged(p)
+	dc := inst.p.DestinationChanged(p)
 
 	var err error
 	if lc && dc {
@@ -84,34 +81,51 @@ func (inst *Instance) AdaptTo(p *Profile) error {
 	return nil
 }
 
+func (inst *Instance) Stop() {
+	inst.change.Lock()
+	defer inst.change.Unlock()
+
+	if inst.closed {
+		return
+	}
+
+	inst.newDest <- nil
+	inst.newList <- nil
+	inst.closed = true
+	close(inst.fin)
+}
+
 func (inst *Instance) changeListener(p *Profile) error {
 	proto := p.Protocol
 	if len(proto) < 1 {
 		proto = "tcp"
 	}
 
-	if len(p.ListenAuthorityRaw) < 1 {
-		inst.newList <- socketInfo{tlsconf: nil, net: proto, addr: p.Listen}
+	if len(p.ListenAuthorityRaw) < 1 && len(p.ListenCertRaw) < 1 {
+		inst.newList <- &socketInfo{tlsconf: nil, net: proto, addr: p.Listen}
 		return nil
 	}
 
-	capool := x509.NewCertPool()
-	if ok := capool.AppendCertsFromPEM([]byte(p.ListenAuthorityRaw)); !ok {
-		return errors.New("no certs found for the listen authority")
+	tlsconf := new(tls.Config)
+
+	if len(p.ListenAuthorityRaw) > 0 {
+		capool := x509.NewCertPool()
+		if ok := capool.AppendCertsFromPEM([]byte(p.ListenAuthorityRaw)); !ok {
+			return errors.New("no certs found for the listen authority")
+		}
+		tlsconf.ClientCAs = capool
+		tlsconf.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 
-	cert, err := tls.X509KeyPair([]byte(p.CertRaw), []byte(p.PrivateRaw))
-	if err != nil {
-		return errors.New("error loading cert/key pair: " + err.Error())
+	if len(p.ListenCertRaw) > 0 {
+		cert, err := tls.X509KeyPair([]byte(p.ListenCertRaw), []byte(p.ListenPrivateRaw))
+		if err != nil {
+			return errors.New("loading cert/key pair: " + err.Error())
+		}
+		tlsconf.Certificates = []tls.Certificate{cert}
 	}
 
-	tlsconf := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    capool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-	}
-
-	inst.newList <- socketInfo{tlsconf: tlsconf, net: proto, addr: p.Listen}
+	inst.newList <- &socketInfo{tlsconf: tlsconf, net: proto, addr: p.Listen}
 	return nil
 }
 
@@ -121,27 +135,30 @@ func (inst *Instance) changeDesination(p *Profile) error {
 		proto = "tcp"
 	}
 
-	if len(p.SendAuthorityRaw) < 1 {
-		inst.newList <- socketInfo{tlsconf: nil, net: proto, addr: p.Proxy}
+	if len(p.SendAuthorityRaw) < 1 && len(p.SendCertRaw) < 1 {
+		inst.newDest <- &socketInfo{tlsconf: nil, net: proto, addr: p.Proxy}
 		return nil
 	}
 
-	capool := x509.NewCertPool()
-	if ok := capool.AppendCertsFromPEM([]byte(p.SendAuthorityRaw)); !ok {
-		return errors.New("no certs found for the listen authority")
+	tlsconf := new(tls.Config)
+
+	if len(p.SendAuthorityRaw) > 0 {
+		capool := x509.NewCertPool()
+		if ok := capool.AppendCertsFromPEM([]byte(p.SendAuthorityRaw)); !ok {
+			return errors.New("no certs found for the listen authority")
+		}
+		tlsconf.RootCAs = capool
 	}
 
-	cert, err := tls.X509KeyPair([]byte(p.CertRaw), []byte(p.PrivateRaw))
-	if err != nil {
-		return errors.New("error loading cert/key pair: " + err.Error())
+	if len(p.SendCertRaw) > 0 {
+		cert, err := tls.X509KeyPair([]byte(p.SendCertRaw), []byte(p.SendPrivateRaw))
+		if err != nil {
+			return errors.New("loading cert/key pair: " + err.Error())
+		}
+		tlsconf.Certificates = []tls.Certificate{cert}
 	}
 
-	tlsconf := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    capool,
-	}
-
-	inst.newDest <- socketInfo{tlsconf: tlsconf, net: proto, addr: p.Proxy}
+	inst.newDest <- &socketInfo{tlsconf: tlsconf, net: proto, addr: p.Proxy}
 	return nil
 }
 
@@ -176,8 +193,11 @@ func (inst *Instance) run() {
 			if conCloser != nil {
 				close(conCloser)
 			}
-			dest = &x
-			conCloser = make(chan struct{})
+
+			dest = x
+			if x != nil {
+				conCloser = make(chan struct{})
+			}
 		case x := <-inst.newList:
 			//TODO: if new and old don't have the same address, change the order to open, close for high availability
 			if listener != nil {
@@ -188,6 +208,10 @@ func (inst *Instance) run() {
 			}
 			ident := fmt.Sprintf("%s$%d", inst.ident, rev)
 			rev++
+			if x == nil {
+				listener = nil
+				continue
+			}
 			l, err := x.listen()
 			if err != nil {
 				log.Println(fmt.Sprintf("%s: error opening new listener: %s", ident, err.Error()))
@@ -196,6 +220,8 @@ func (inst *Instance) run() {
 				listener = l
 				go inst.acceptance(ident, l)
 			}
+		case <-inst.fin:
+			return
 		}
 	}
 }
@@ -227,18 +253,21 @@ func (inst *Instance) connection(ident string, l net.Conn, config socketInfo, do
 		return
 	}
 	defer c.Close()
-	ec := make(chan error)
+	ec := make(chan conConculsion)
+	defer close(ec)
 	go inst.transfer(ident+":ltd", l, c, ec)
 	go inst.transfer(ident+":dtl", c, l, ec)
+	var result conConculsion
 	open := 2
 
 	select {
-	case err = <-ec:
+	case result = <-ec:
 		open--
-		// errors.Is()
-		// verbose?
-		log.Println(err)
-		// io.ErrClosed?
+		if result.err != nil {
+			log.Println(fmt.Sprintf("%s: socket error after xfer:%d: %s", ident, result.xfer, result.err.Error()))
+		} else if Debug {
+			log.Println(fmt.Sprintf("%s: closed after xfer:%d", ident, result.xfer))
+		}
 	case <-done:
 		//TODO: Add grace period
 	}
@@ -247,23 +276,20 @@ func (inst *Instance) connection(ident string, l net.Conn, config socketInfo, do
 
 	// drain both channels
 	for ; open > 0; open-- {
-		err = <-ec
-		// verbose?
-		log.Println(err)
+		result = <-ec
+		if Debug {
+			log.Println(fmt.Sprintf("%s: closed after xfer:%d", ident, result.xfer))
+		}
 	}
 }
 
-func (inst *Instance) transfer(ident string, r io.Reader, w io.Writer, e chan<- error) {
-	defer close(e)
-	var count uint64
-	for {
-		n, err := io.Copy(w, r)
-		count += uint64(n)
-		if err != nil {
-			e <- fmt.Errorf("%s: error after transferring %d bytes: %w", ident, count, err)
-			return
-		}
-		// Add a delay?
+func (inst *Instance) transfer(ident string, r io.Reader, w io.Writer, e chan<- conConculsion) {
+	count, err := io.Copy(w, r)
+	if err != nil {
+		werr := fmt.Errorf("%s: error after transferring %d bytes: %w", ident, count, err)
+		e <- conConculsion{ident: ident, err: werr, xfer: count}
+	} else {
+		e <- conConculsion{ident: ident, xfer: count}
 	}
 }
 

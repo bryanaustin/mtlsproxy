@@ -15,21 +15,24 @@ import (
 type Profile struct {
 	Name                string
 	Listen              string
-	Proxy               string
+	Proxy               string //TODO: Rename to send
 	Protocol            string
-	CertPath            string
-	CertRaw             string
-	PrivatePath         string
-	PrivateRaw          string
+	ListenCertPath      string
+	ListenCertRaw       string
+	ListenPrivatePath   string
+	ListenPrivateRaw    string
 	ListenAuthorityPath string
 	ListenAuthorityRaw  string
+	SendCertPath        string
+	SendCertRaw         string
+	SendPrivatePath     string
+	SendPrivateRaw      string
 	SendAuthorityPath   string
 	SendAuthorityRaw    string
 	Source              string
 }
 
 type Configurations struct {
-	Debug     bool
 	ConfigDir string
 	Profiles  []*Profile
 }
@@ -39,10 +42,16 @@ const (
 	EnvProtocolSuffix        = "_PROTOCOL"
 	EnvListenSuffix          = "_LISTEN"
 	EnvProxySuffix           = "_PROXY"
-	EnvCertSuffix            = "_CERT"
-	EnvPrivateSuffix         = "_PRIVATE"
-	EnvAuthorityListenSuffix = "_AUTHORITY_LISTEN"
+	EnvListenCertSuffix      = "_CERT_LISTEN"
+	EnvSendCertSuffix        = "_CERT_SEND"
+	EnvListenPrivateSuffix   = "_PRIVATE_LISTEN"
+	EnvSendPrivateSuffix     = "_PRIVATE_SEND"
+	EnvAuthorityListenSuffix = "_AUTHORITY_LISTEN" //TODO: Rename _LISTEN_AUTHORITY
 	EnvAuthoritySendSuffix   = "_AUTHORITY_SEND"
+)
+
+var (
+	Debug bool
 )
 
 func (c Configurations) getProfiles() (nups []*Profile, err error) {
@@ -65,6 +74,7 @@ func (c Configurations) getProfiles() (nups []*Profile, err error) {
 	for {
 		diritems, err = cfd.ReadDir(16)
 		if err == io.EOF {
+			err = nil
 			break
 		}
 		if err != nil {
@@ -100,12 +110,12 @@ func (c Configurations) getProfiles() (nups []*Profile, err error) {
 
 func getImmutableConfigs() (c *Configurations, err error) {
 	c = new(Configurations)
-	flag.BoolVar(&c.Debug, "debug", false, "enable debug logging")
+	flag.BoolVar(&Debug, "debug", false, "enable debug logging")
 	flag.StringVar(&c.ConfigDir, "configdir", "", "directory for config files")
 	yaarp.Parse()
 
-	if env := os.Getenv("MTLSPROXY_DEBUG"); !c.Debug && len(env) > 0 {
-		c.Debug, err = strconv.ParseBool(env)
+	if env := os.Getenv("MTLSPROXY_DEBUG"); !Debug && len(env) > 0 {
+		Debug, err = strconv.ParseBool(env)
 		if err != nil {
 			return
 		}
@@ -157,14 +167,24 @@ func profilesFromEnv() (ps []*Profile) {
 			p.Protocol = os.Getenv(EnvProfilePrefix + x)
 			continue
 		}
-		if r := profileSuffix(x, EnvCertSuffix); len(r) > 0 {
+		if r := profileSuffix(x, EnvListenCertSuffix); len(r) > 0 {
 			p := findoradd(r)
-			p.CertRaw = os.Getenv(EnvProfilePrefix + x)
+			p.ListenCertRaw = os.Getenv(EnvProfilePrefix + x)
 			continue
 		}
-		if r := profileSuffix(x, EnvPrivateSuffix); len(r) > 0 {
+		if r := profileSuffix(x, EnvSendCertSuffix); len(r) > 0 {
 			p := findoradd(r)
-			p.PrivateRaw = os.Getenv(EnvProfilePrefix + x)
+			p.SendCertRaw = os.Getenv(EnvProfilePrefix + x)
+			continue
+		}
+		if r := profileSuffix(x, EnvListenPrivateSuffix); len(r) > 0 {
+			p := findoradd(r)
+			p.ListenPrivateRaw = os.Getenv(EnvProfilePrefix + x)
+			continue
+		}
+		if r := profileSuffix(x, EnvSendPrivateSuffix); len(r) > 0 {
+			p := findoradd(r)
+			p.SendPrivateRaw = os.Getenv(EnvProfilePrefix + x)
 			continue
 		}
 		if r := profileSuffix(x, EnvAuthorityListenSuffix); len(r) > 0 {
@@ -222,17 +242,29 @@ func mergeProfile(a, b *Profile) *Profile {
 	if len(a.Protocol) < 1 {
 		a.Protocol = b.Protocol
 	}
-	if len(a.CertPath) < 1 {
-		a.CertPath = b.CertPath
+	if len(a.SendCertPath) < 1 {
+		a.SendCertPath = b.SendCertPath
 	}
-	if len(a.CertRaw) < 1 {
-		a.CertRaw = b.CertRaw
+	if len(a.SendCertRaw) < 1 {
+		a.SendCertRaw = b.SendCertRaw
 	}
-	if len(a.PrivatePath) < 1 {
-		a.PrivatePath = b.PrivatePath
+	if len(a.ListenCertPath) < 1 {
+		a.ListenCertPath = b.ListenCertPath
 	}
-	if len(a.PrivateRaw) < 1 {
-		a.PrivateRaw = b.PrivateRaw
+	if len(a.ListenCertRaw) < 1 {
+		a.ListenCertRaw = b.ListenCertRaw
+	}
+	if len(a.ListenPrivatePath) < 1 {
+		a.ListenPrivatePath = b.ListenPrivatePath
+	}
+	if len(a.ListenPrivateRaw) < 1 {
+		a.ListenPrivateRaw = b.ListenPrivateRaw
+	}
+	if len(a.SendPrivatePath) < 1 {
+		a.SendPrivatePath = b.SendPrivatePath
+	}
+	if len(a.SendPrivateRaw) < 1 {
+		a.SendPrivateRaw = b.SendPrivateRaw
 	}
 	if len(a.ListenAuthorityPath) < 1 {
 		a.ListenAuthorityPath = b.ListenAuthorityPath
@@ -263,12 +295,16 @@ func (p Profile) Copy() (nu *Profile) {
 	nu.Listen = p.Listen
 	nu.Proxy = p.Proxy
 	nu.Protocol = p.Protocol
-	nu.CertPath = p.CertPath
-	nu.CertRaw = p.CertRaw
-	nu.PrivatePath = p.PrivatePath
-	nu.PrivateRaw = p.PrivateRaw
+	nu.ListenCertPath = p.ListenCertPath
+	nu.ListenCertRaw = p.ListenCertRaw
+	nu.ListenPrivatePath = p.ListenPrivatePath
+	nu.ListenPrivateRaw = p.ListenPrivateRaw
 	nu.ListenAuthorityPath = p.ListenAuthorityPath
 	nu.ListenAuthorityRaw = p.ListenAuthorityRaw
+	nu.SendCertPath = p.SendCertPath
+	nu.SendCertRaw = p.SendCertRaw
+	nu.SendPrivatePath = p.SendPrivatePath
+	nu.SendPrivateRaw = p.SendPrivateRaw
 	nu.SendAuthorityPath = p.SendAuthorityPath
 	nu.SendAuthorityRaw = p.SendAuthorityRaw
 	nu.Source = p.Source
@@ -276,20 +312,34 @@ func (p Profile) Copy() (nu *Profile) {
 }
 
 // resolve will load any files from the filesystem that are pending
-func (p *Profile) resolve() error {
-	if len(p.CertRaw) < 1 && len(p.CertPath) > 0 {
-		b, err := os.ReadFile(p.CertPath)
+func (p *Profile) Resolve() error {
+	if len(p.ListenCertRaw) < 1 && len(p.ListenCertPath) > 0 {
+		b, err := os.ReadFile(p.ListenCertPath)
 		if err != nil {
-			return fmt.Errorf("reading file %q: %w", p.CertPath, err)
+			return fmt.Errorf("reading file %q: %w", p.ListenCertPath, err)
 		}
-		p.CertRaw = string(b)
+		p.ListenCertRaw = string(b)
 	}
-	if len(p.PrivateRaw) < 1 && len(p.PrivatePath) > 0 {
-		b, err := os.ReadFile(p.PrivatePath)
+	if len(p.SendCertRaw) < 1 && len(p.SendCertPath) > 0 {
+		b, err := os.ReadFile(p.SendCertPath)
 		if err != nil {
-			return fmt.Errorf("reading file %q: %w", p.PrivatePath, err)
+			return fmt.Errorf("reading file %q: %w", p.SendCertPath, err)
 		}
-		p.PrivateRaw = string(b)
+		p.SendCertRaw = string(b)
+	}
+	if len(p.ListenPrivateRaw) < 1 && len(p.ListenPrivatePath) > 0 {
+		b, err := os.ReadFile(p.ListenPrivatePath)
+		if err != nil {
+			return fmt.Errorf("reading file %q: %w", p.ListenPrivatePath, err)
+		}
+		p.ListenPrivateRaw = string(b)
+	}
+	if len(p.SendPrivateRaw) < 1 && len(p.SendPrivatePath) > 0 {
+		b, err := os.ReadFile(p.SendPrivatePath)
+		if err != nil {
+			return fmt.Errorf("reading file %q: %w", p.SendPrivatePath, err)
+		}
+		p.SendPrivateRaw = string(b)
 	}
 	if len(p.ListenAuthorityRaw) < 1 && len(p.ListenAuthorityPath) > 0 {
 		b, err := os.ReadFile(p.ListenAuthorityPath)
@@ -314,22 +364,17 @@ func (p *Profile) ListenChanged(q *Profile) bool {
 	if p.Listen != q.Listen {
 		return true
 	}
-
 	if p.Protocol != q.Protocol {
 		return true
 	}
-
 	if p.ListenAuthorityRaw != q.ListenAuthorityRaw {
 		return true
 	}
-
-	if len(p.ListenAuthorityRaw) > 1 {
-		if p.CertRaw != q.CertRaw {
-			return true
-		}
-		if p.PrivateRaw != q.PrivateRaw {
-			return true
-		}
+	if p.ListenCertRaw != q.ListenCertRaw {
+		return true
+	}
+	if p.ListenPrivateRaw != q.ListenPrivateRaw {
+		return true
 	}
 
 	return false
@@ -341,22 +386,17 @@ func (p *Profile) DestinationChanged(q *Profile) bool {
 	if p.Proxy != q.Proxy {
 		return true
 	}
-
 	if p.Protocol != q.Protocol {
 		return true
 	}
-
 	if p.SendAuthorityRaw != q.SendAuthorityRaw {
 		return true
 	}
-
-	if len(p.SendAuthorityRaw) > 1 {
-		if p.CertRaw != q.CertRaw {
-			return true
-		}
-		if p.PrivateRaw != q.PrivateRaw {
-			return true
-		}
+	if p.SendCertRaw != q.SendCertRaw {
+		return true
+	}
+	if p.SendPrivateRaw != q.SendPrivateRaw {
+		return true
 	}
 
 	return false
