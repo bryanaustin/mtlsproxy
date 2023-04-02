@@ -1,5 +1,4 @@
 # mtlsproxy
-[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white&style=flat-square)](https://pkg.go.dev/github.com/bryanaustin/mtlsproxy)
 
 A proxy for receiving or sending mtls connections. This program is written as a service that reloads configurations without disruption when sending the HUP signal.
 
