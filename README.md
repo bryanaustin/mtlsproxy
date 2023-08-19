@@ -9,6 +9,7 @@ A proxy for receiving or sending mtls connections. This program is written as a 
 * Configuration files in [toml](https://github.com/BurntSushi/toml) format
 * mtls can run at the ingress end, egress end or both
 * Can run multiple proxies in a single instance
+* Not HTTP specific, works with any protocol
 
 ## Configuration via Environmental Variables
 mtlsproxy uses multiple named profiles to set up configurations. The syntax for each starts with `MTLSPROXY_PROFILE_`, then has the profile name and a suffix for the specific option of that profile. For example:
